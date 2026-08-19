@@ -30,6 +30,7 @@ func (GitHubCreateStep) Run(ctx context.Context, s *core.ShipState) core.StepRes
 	if err != nil {
 		return core.StepResult{Err: err}
 	}
+	s.Visibility = "public"
 	s.RemoteURL = remoteURL
 	s.RepoCreated = true
 	return core.StepResult{Success: true, Message: s.RepoName + " (" + s.Visibility + ")"}
