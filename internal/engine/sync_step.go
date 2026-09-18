@@ -28,9 +28,29 @@ func (PullStep) CanSkip(s *core.ShipState) bool {
 }
 
 func (PullStep) Run(ctx context.Context, s *core.ShipState) core.StepResult {
+	// PullStep runs before the local edit gets staged/committed, so any
+	// uncommitted work-in-progress must be stashed first — otherwise `git
+	// pull` refuses to touch files it would have to overwrite.
+	statusOut, _ := runGit(ctx, s.RepoPath, "status", "--porcelain")
+	dirty := strings.TrimSpace(statusOut) != ""
+
+	if dirty {
+		if _, err := runGit(ctx, s.RepoPath, "stash", "push", "-u", "-m", "git-ship: auto-stash before pull"); err != nil {
+			return core.StepResult{Err: err, Message: "failed to stash local changes before pulling"}
+		}
+	}
+
 	out, err := runGit(ctx, s.RepoPath, "pull", "origin", s.BranchName, "--no-rebase")
 
 	if err == nil {
+		if dirty {
+			if popOut, popErr := runGit(ctx, s.RepoPath, "stash", "pop"); popErr != nil {
+				return core.StepResult{
+					Err:     popErr,
+					Message: "pulled from origin, but restoring your local changes conflicted: " + strings.TrimSpace(popOut) + " — resolve manually with 'git stash pop', then re-run git-ship.",
+				}
+			}
+		}
 		if strings.Contains(out, "Already up to date") {
 			return core.StepResult{Success: true, Message: "already up to date"}
 		}
@@ -38,16 +58,25 @@ func (PullStep) Run(ctx context.Context, s *core.ShipState) core.StepResult {
 	}
 
 	if strings.Contains(out, "couldn't find remote ref") || strings.Contains(out, "unknown revision or path not in the working tree") {
+		if dirty {
+			_, _ = runGit(ctx, s.RepoPath, "stash", "pop")
+		}
 		return core.StepResult{Success: true, Skipped: true, Message: "new branch, nothing to sync yet"}
 	}
 
 	if strings.Contains(out, "CONFLICT") || strings.Contains(out, "Automatic merge failed") {
 		_, _ = runGit(ctx, s.RepoPath, "merge", "--abort")
+		if dirty {
+			_, _ = runGit(ctx, s.RepoPath, "stash", "pop")
+		}
 		return core.StepResult{
 			Err:     err,
 			Message: "merge conflict with origin/" + s.BranchName + " — merge aborted, working tree left clean. Resolve manually (git pull, fix conflicts, commit) then re-run git-ship.",
 		}
 	}
 
+	if dirty {
+		_, _ = runGit(ctx, s.RepoPath, "stash", "pop")
+	}
 	return core.StepResult{Err: err}
 }
